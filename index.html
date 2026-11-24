@@ -1,17 +1,17 @@
-<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"><title>Peppa Motion Mirror</title><!-- V1.1: grounded feet and jump tracking --><style>
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"><title>Peppa Motion Mirror</title><!-- V1.2: distance-normalized, amplified jump tracking --><style>
 *{box-sizing:border-box}html,body{margin:0;width:100%;height:100%;overflow:hidden;background:#bce4f4;font:16px system-ui}main{position:fixed;inset:0}canvas{width:100%;height:100%;display:block}video{position:absolute;top:max(10px,env(safe-area-inset-top));right:max(10px,env(safe-area-inset-right));width:24%;max-width:220px;aspect-ratio:4/3;object-fit:contain;background:#222;border:3px solid white;border-radius:12px;transform:scaleX(-1)}#status{position:absolute;bottom:12px;left:50%;transform:translateX(-50%);background:#ffffffdd;padding:8px 15px;border-radius:20px;text-align:center;max-width:90%;font-size:14px}#start{position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);padding:16px 28px;border:0;border-radius:30px;background:#e94b50;color:white;font-size:20px;font-weight:700;box-shadow:0 4px 16px #0002} [hidden]{display:none!important}</style></head><body><main><canvas id="stage"></canvas><video id="camera" autoplay muted playsinline></video><button id="start">Start camera</button><div id="status">Allow camera access to play</div></main>
 <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@4.22.0/dist/tf.min.js"></script><script src="https://cdn.jsdelivr.net/npm/@tensorflow-models/pose-detection@2.1.3/dist/pose-detection.min.js"></script>
 <script>
-const video=document.querySelector('video'),canvas=document.querySelector('canvas'),ctx=canvas.getContext('2d'),status=document.querySelector('#status'),button=document.querySelector('#start');let detector,stream,busy=false,playing=false,lastSeen=0,baseHip=null,baseTorso=null,lastFrame=0,baseFloor=null,floorSamples=[],groundedAt=0;
+const video=document.querySelector('video'),canvas=document.querySelector('canvas'),ctx=canvas.getContext('2d'),status=document.querySelector('#status'),button=document.querySelector('#start');let detector,stream,busy=false,playing=false,lastSeen=0,baseHip=null,baseTorso=null,lastFrame=0,baseFloor=null,floorSamples=[],groundedAt=0,baseShoulder=null,lastFeetSeen=0,scaleCandidate=[],lastPoseUpdate=0;
 const neutral={x:.5,y:0,tilt:0,lean:0,arms:[[-.8,.65],[-.25,.97],[.8,.65],[.25,.97]],legs:[[-.12,1],[0,1],[.12,1],[0,1]]};let pose=structuredClone(neutral),target=structuredClone(neutral);
 function resize(){let d=Math.min(devicePixelRatio||1,2);canvas.width=Math.round(canvas.clientWidth*d);canvas.height=Math.round(canvas.clientHeight*d);ctx.setTransform(d,0,0,d,0,0)}addEventListener('resize',resize);resize();
 function line(a,b,c,w=6,color='#d77c9e'){ctx.beginPath();ctx.moveTo(...a);ctx.lineTo(...b);if(c)ctx.lineTo(...c);ctx.lineWidth=w;ctx.strokeStyle=color;ctx.lineCap='round';ctx.lineJoin='round';ctx.stroke()}
 function ellipse(x,y,rx,ry,fill,stroke){ctx.beginPath();ctx.ellipse(x,y,rx,ry,0,0,Math.PI*2);ctx.fillStyle=fill;ctx.fill();if(stroke){ctx.strokeStyle=stroke;ctx.lineWidth=2.5;ctx.stroke()}}
 function shape(fn,fill,stroke){ctx.beginPath();fn();ctx.closePath();ctx.fillStyle=fill;ctx.fill();if(stroke){ctx.strokeStyle=stroke;ctx.lineWidth=2.5;ctx.stroke()}}
 function limb(start,v1,v2,l1,l2,foot=false){let mid=[start[0]+v1[0]*l1,start[1]+v1[1]*l1],end=[mid[0]+v2[0]*l2,mid[1]+v2[1]*l2];line(start,mid,end,6);if(foot){line([end[0]-5,end[1]],[end[0]+8,end[1]],null,9,'#28242b')}else{let angle=Math.atan2(v2[1],v2[0]);for(let a of [-.65,0,.65])line(end,[end[0]+9*Math.cos(angle+a),end[1]+9*Math.sin(angle+a)],null,3.4)}}
-function render(t){requestAnimationFrame(render);let w=canvas.clientWidth,h=canvas.clientHeight;ctx.clearRect(0,0,w,h);if(performance.now()-lastSeen>900&&playing){target.y=0;if(baseFloor===null)floorSamples=[];status.hidden=false;status.textContent='Step back so I can see your whole body';}let f=0.25;for(let k of ['x','tilt','lean'])pose[k]+=(target[k]-pose[k])*f;pose.y+=(target.y-pose.y)*.48;if(target.y===0&&pose.y<.6)pose.y=0;for(let k of ['arms','legs'])for(let i=0;i<4;i++)for(let j=0;j<2;j++)pose[k][i][j]+=(target[k][i][j]-pose[k][i][j])*f;
+function render(t){requestAnimationFrame(render);let w=canvas.clientWidth,h=canvas.clientHeight;ctx.clearRect(0,0,w,h);if(performance.now()-lastSeen>550&&playing){target.y=0;if(baseFloor===null)floorSamples=[];status.hidden=false;status.textContent='Step back so I can see your whole body';}let f=0.25;for(let k of ['x','tilt','lean'])pose[k]+=(target[k]-pose[k])*f;pose.y+=(target.y-pose.y)*(target.y>pose.y?.72:.55);if(target.y===0&&pose.y<.6)pose.y=0;for(let k of ['arms','legs'])for(let i=0;i<4;i++)for(let j=0;j<2;j++)pose[k][i][j]+=(target[k][i][j]-pose[k][i][j])*f;
 // Anchor the lowest shoe to the virtual floor; bend knees without lifting the body off it.
-let s=Math.min(h/330,w/380),x=w*(.16+.68*pose.x),ground=h*.91;
+let s=Math.min(h/405,w/380),x=w*(.16+.68*pose.x),ground=h*.91;
 let footBottom=Math.max(20+25*pose.legs[0][1]+24*pose.legs[1][1],20+25*pose.legs[2][1]+24*pose.legs[3][1])+4.5;
 let lift=Math.max(0,pose.y),y=ground-(footBottom+lift)*s;
 ctx.save();ctx.translate(x,ground+2);ctx.scale(s,s);ctx.globalAlpha=1-Math.min(.65,lift/130);ellipse(0,0,43*(1-Math.min(.35,lift/200)),6,'#87bed0');ctx.restore();ctx.save();ctx.translate(x,y);ctx.scale(s,s);
@@ -23,30 +23,57 @@ ctx.save();ctx.translate(0,-76);ctx.rotate(pose.tilt-pose.lean);ctx.save();ctx.t
 shape(()=>{ctx.moveTo(-43,-58);ctx.bezierCurveTo(-20,-83,9,-72,28,-58);ctx.lineTo(58,-53);ctx.bezierCurveTo(78,-50,78,-15,54,-12);ctx.bezierCurveTo(39,9,-12,13,-40,-4);ctx.bezierCurveTo(-62,-16,-61,-42,-43,-58)},'#ffb5cf','#d77c9e');ellipse(60,-34,15,20,'#fca7c8','#d77c9e');ellipse(56,-39,3,4,'#cc7196');ellipse(65,-33,3,4,'#cc7196');ellipse(-5,-50,10,10,'white','#d77c9e');ellipse(18,-54,10,10,'white','#d77c9e');ellipse(-1,-49,3.7,4,'#29232b');ellipse(22,-53,3.7,4,'#29232b');ellipse(-35,-23,12,12,'#f18eaf');ctx.beginPath();ctx.moveTo(-17,-16);ctx.quadraticCurveTo(0,3,19,-17);ctx.strokeStyle='#b85e80';ctx.lineWidth=3;ctx.lineCap='round';ctx.stroke();ctx.restore();ctx.restore();ctx.restore();}
 requestAnimationFrame(render);
 const good=p=>p&&p.score>.28;const clamp=(n,a,b)=>Math.max(a,Math.min(b,n));const avg=(a,b)=>({x:(a.x+b.x)/2,y:(a.y+b.y)/2});function vector(a,b,old){if(!good(a)||!good(b))return old;let dx=-(b.x-a.x),dy=b.y-a.y,l=Math.hypot(dx,dy);return l>2?[dx/l,dy/l]:old}
-function update(k){let p=Object.fromEntries(k.map(q=>[q.name,q]));let ls=p.left_shoulder,rs=p.right_shoulder,lh=p.left_hip,rh=p.right_hip;if(![ls,rs,lh,rh].every(good))return;let sh=avg(ls,rs),hip=avg(lh,rh),torso=Math.hypot(sh.x-hip.x,sh.y-hip.y);if(torso<12)return;lastSeen=performance.now();status.hidden=true;let W=video.videoWidth;target.x=clamp(1-hip.x/W,.03,.97);// Establish the camera floor from a short upright calibration. The lower ankle
-// stays close to this line during a squat or a single-leg kick; both rise in a jump.
-let la=p.left_ankle,ra=p.right_ankle;
-if(good(la)&&good(ra)){
-  let floor=Math.max(la.y,ra.y);
-  if(baseFloor===null){
-    floorSamples.push({floor,hip:hip.y,torso});
-    status.hidden=false;status.textContent='Stand still with both feet on the floor';
+function update(k){let p=Object.fromEntries(k.map(q=>[q.name,q]));let ls=p.left_shoulder,rs=p.right_shoulder,lh=p.left_hip,rh=p.right_hip;if(![ls,rs,lh,rh].every(good))return;let sh=avg(ls,rs),hip=avg(lh,rh),torso=Math.hypot(sh.x-hip.x,sh.y-hip.y);if(torso<6)return;lastSeen=performance.now();status.hidden=true;let W=video.videoWidth;target.x=clamp(1-hip.x/W,.03,.97);// Use body-relative distances rather than absolute camera pixels. Both ankles
+// rising is the main signal; upward body motion confirms takeoff, not its height.
+let la=p.left_ankle,ra=p.right_ankle,now=performance.now();
+let feetGood=[la,ra].every(q=>q&&q.score>.18&&Number.isFinite(q.y));
+let floor=feetGood?Math.max(la.y,ra.y):null;
+if(baseFloor===null){
+  target.y=0;status.hidden=false;status.textContent='Stand still with both feet visible';
+  if(feetGood){
+    floorSamples.push({floor,hip:hip.y,shoulder:sh.y,torso});
     if(floorSamples.length>=8){
       let median=key=>floorSamples.map(v=>v[key]).sort((a,b)=>a-b)[Math.floor(floorSamples.length/2)];
-      baseFloor=median('floor');baseHip=median('hip');baseTorso=median('torso');groundedAt=performance.now();status.hidden=true;
+      baseFloor=median('floor');baseHip=median('hip');baseShoulder=median('shoulder');baseTorso=median('torso');groundedAt=now;lastFeetSeen=now;status.hidden=true;
     }
+  }else floorSamples=[];
+}else{
+  let scale=Math.max(baseTorso,6),ankleRise=feetGood?(baseFloor-floor)/scale:0;
+  let hipRise=(baseHip-hip.y)/scale,shoulderRise=(baseShoulder-sh.y)/scale;
+  let bodyRise=(hipRise+shoulderRise)/2;
+  let ratio=torso/scale;
+  // If the player has moved substantially nearer/farther, re-reference once
+  // they are standing steadily again. Never reset the reference mid-jump.
+  if(feetGood&&Math.abs(ratio-1)>.22&&Math.abs(la.y-ra.y)/scale<.20){
+    scaleCandidate.push({floor,hip:hip.y,shoulder:sh.y,torso,t:now});
+    scaleCandidate=scaleCandidate.filter(v=>now-v.t<1500);
+    let range=k=>Math.max(...scaleCandidate.map(v=>v[k]))-Math.min(...scaleCandidate.map(v=>v[k]));
+    if(scaleCandidate.length>=6&&now-scaleCandidate[0].t>=550&&range('floor')<torso*.12&&range('hip')<torso*.12&&range('torso')<torso*.12){
+      let mean=k=>scaleCandidate.reduce((s,v)=>s+v[k],0)/scaleCandidate.length;
+      baseFloor=mean('floor');baseHip=mean('hip');baseShoulder=mean('shoulder');baseTorso=mean('torso');scaleCandidate=[];target.y=0;groundedAt=now;lastFeetSeen=now;
+      ankleRise=hipRise=shoulderRise=bodyRise=0;
+    }
+  }else scaleCandidate=[];
+  if(feetGood){
+    lastFeetSeen=now;
+    // The larger gain is intentional: a small real jump looks playful on TV.
+    // Hysteresis keeps single-leg kicks and normal standing jitter grounded.
+    let airborne=target.y>3;
+    let rising=ankleRise>(airborne?.045:.075)&&bodyRise>(airborne?-.06:.045);
+    let rise=rising?(.82*ankleRise+.18*Math.max(0,bodyRise)):0;
+    target.y=clamp((rise-.035)*290,0,105);
+    // Adapt only during quiet, grounded frames; never chase the jump peak.
+    if(target.y===0&&Math.abs(ankleRise)<.13&&Math.abs(hipRise)<.17&&Math.abs(shoulderRise)<.17&&Math.abs(la.y-ra.y)/scale<.20){
+      if(now-groundedAt>300){baseFloor+=.035*(floor-baseFloor);baseHip+=.035*(hip.y-baseHip);baseShoulder+=.035*(sh.y-baseShoulder);baseTorso+=.025*(torso-baseTorso);}
+    }else groundedAt=now;
   }else{
-    let ankleRise=(baseFloor-floor)/Math.max(baseTorso,20);
-    let hipRise=(baseHip-hip.y)/Math.max(baseTorso,20);
-    // Require upward hip motion too, so crouching or pulling up both feet does not count as a jump.
-    let rise=Math.min(ankleRise,Math.max(0,hipRise)*1.35);
-    target.y=clamp((rise-.055)*108,0,100);
-    // Slowly adapt to small camera/stance changes only when both feet appear grounded.
-    if(Math.abs(ankleRise)<.10 && Math.abs(la.y-ra.y)<baseTorso*.18 && Math.abs(hipRise)<.12){
-      if(performance.now()-groundedAt>250){baseFloor+=.035*(floor-baseFloor);baseHip+=.02*(hip.y-baseHip);baseTorso+=.02*(torso-baseTorso);}
-    }else{groundedAt=performance.now();}
+    // Brief ankle occlusion is common at a distance. Use torso translation as
+    // a temporary backup only when both hips and shoulders clearly rise.
+    if(hipRise>.09&&shoulderRise>.09&&ratio>.78&&ratio<1.22){target.y=clamp((bodyRise-.055)*250,0,105);}
+    else if(now-lastFeetSeen>180||bodyRise<.015){target.y=0;}
+    groundedAt=now;
   }
-}else{target.y=0;}
+}
 target.lean=clamp(Math.atan2(-(sh.x-hip.x),hip.y-sh.y),-.5,.5);if(good(p.left_ear)&&good(p.right_ear)){let a=p.left_ear,b=p.right_ear;target.tilt=clamp(Math.atan2(a.y-b.y,Math.abs(a.x-b.x)), -.55,.55)}else if(good(p.nose)){target.tilt=clamp(Math.atan2(-(p.nose.x-sh.x),sh.y-p.nose.y),-.5,.5)}
 // Mirrored camera: anatomical left maps to screen left for a person facing camera.
 for(let [i,side] of ['left','right'].entries()){let a=i*2;target.arms[a]=vector(p[side+'_shoulder'],p[side+'_elbow'],target.arms[a]);target.arms[a+1]=vector(p[side+'_elbow'],p[side+'_wrist'],target.arms[a+1]);target.legs[a]=vector(p[side+'_hip'],p[side+'_knee'],target.legs[a]);target.legs[a+1]=vector(p[side+'_knee'],p[side+'_ankle'],target.legs[a+1]);}}
